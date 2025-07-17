@@ -9,6 +9,7 @@ local stoke2 = Instance.new("UIStroke")
 local frem = Instance.new("Frame") 
 
 frem.Parent = uglyframe
+frem.Size = UDim2.new(0.3, 0, 0.3, 0) 
 
 screngui.Parent = gethui()
 screngui.IgnoreGuiInset = true
