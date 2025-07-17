@@ -11,7 +11,7 @@ local frem = Instance.new("Frame")
 frem.Parent = uglyframe
 frem.Size = UDim2.new(0.3, 0, 0.3, 0) 
 frem.AnchorPoint = Vector2.new(0.5, 0.5) 
-uglyframe.Position = UDim2.new(0.5, 0, 0.5, 0)
+frem.Position = UDim2.new(0.5, 0, 0.5, 0)
 
 screngui.Parent = gethui()
 screngui.IgnoreGuiInset = true
