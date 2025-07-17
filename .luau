@@ -9,7 +9,7 @@ local stoke2 = Instance.new("UIStroke")
 local frem = Instance.new("Frame") 
 
 frem.Parent = uglyframe
-frem.Size = UDim2.new(0.3, 0, 0.2, 0) 
+frem.Size = UDim2.new(1, 0, 0.2, 0) 
 frem.AnchorPoint = Vector2.new(0.5, 0.5) 
 frem.Position = UDim2.new(0.5, 0, 0.0, 0)
 
