@@ -11,6 +11,7 @@ local frem = Instance.new("Frame")
 coltxt.Parent = frem
 coltxt.AnchorPoint = Vector2.new(0.5, 0.5) 
 coltxt.Position = UDim2.new(0.5, 0, 0.5, 0) 
+coltxt.Size = UDim2.new(1, 0, 1, 0) 
 
 frem.Parent = uglyframe
 frem.Size = UDim2.new(1, 0, 0.2, 0) 
