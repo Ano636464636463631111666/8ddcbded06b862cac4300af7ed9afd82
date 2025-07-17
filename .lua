@@ -7,6 +7,9 @@ local corner2 = Instance.new("UICorner")
 local stoke1 = Instance.new("UIStroke") 
 local stoke2 = Instance.new("UIStroke") 
 local frem = Instance.new("Frame") 
+
+frem.Parent = uglyframe
+
 screngui.Parent = gethui()
 screngui.IgnoreGuiInset = true
 
