@@ -8,6 +8,10 @@ local stoke1 = Instance.new("UIStroke")
 local stoke2 = Instance.new("UIStroke") 
 local frem = Instance.new("Frame") 
 
+coltxt.Parent = frem
+coltxt.AnchorPoint = Vector2.new(0.5, 0.5) 
+coltxt.Position = UDim2.new(0.5, 0, 0.5, 0) 
+
 frem.Parent = uglyframe
 frem.Size = UDim2.new(1, 0, 0.2, 0) 
 frem.AnchorPoint = Vector2.new(0.5, 0.5) 
