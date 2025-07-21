@@ -1,9 +1,14 @@
 local gui = Instance.new("ScreenGui") 
 local f1 = Instance.new("Frame") 
 local t1 = Instance.new("TextLabel") 
-local
-local
-local
-local
-local
-local
+local uc1 = Instance.new("UICorner") 
+local uc2 = Instance.new("UICorner") 
+local uc3 = Instance.new("UICorner") 
+local uc4 = Instance.new("UICorner") 
+local uc5 = Instance.new("UICorner") 
+local tb1 = Instance.new("TextBox") 
+local tb2 = Instance.new("TextBox") 
+local t2 = Instance.new("TextLabel")
+local t3 = Instance.new("TextLabel")
+local t4 = Instance.new("TextLabel")
+
