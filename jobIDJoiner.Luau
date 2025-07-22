@@ -17,6 +17,3 @@ gui.IgnoreGuiInset = true
 
 f1.AnchorPoint = Vector2.new(0.5, 0.5) 
 f1.Size =  UDim2.new(0.17, 0, 0.37,0) 
-
-
-{0.170000017, 0}, {0.379999995, 0}
