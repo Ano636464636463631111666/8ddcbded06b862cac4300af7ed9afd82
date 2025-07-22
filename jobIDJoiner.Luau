@@ -12,6 +12,9 @@ local t2 = Instance.new("TextLabel")
 local t3 = Instance.new("TextLabel")
 local t4 = Instance.new("TextLabel") 
 
+uc1.Parent = f1
+
+
 gui.Parent = gethui()
 gui.IgnoreGuiInset = true
 
@@ -19,3 +22,4 @@ f1.AnchorPoint = Vector2.new(0.5, 0.5)
 f1.Size =  UDim2.new(0.17, 0, 0.37,0) 
 f1.Positon = UDim2.new(0.5, 0, 0.5, 0) 
 f1.Parent = gui
+
