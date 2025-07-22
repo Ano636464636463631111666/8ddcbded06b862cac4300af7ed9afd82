@@ -10,5 +10,12 @@ local tb1 = Instance.new("TextBox")
 local tb2 = Instance.new("TextBox") 
 local t2 = Instance.new("TextLabel")
 local t3 = Instance.new("TextLabel")
-local t4 = Instance.new("TextLabel")
--- REMEMBER THE SIZE ANOOOOOOOO {0.170000017, 0}, {0.379999995, 0}
+local t4 = Instance.new("TextLabel") 
+
+gui.Parent = gethui()
+gui.IgnoreGuiInset = true
+
+f1.AnchorPoint huh
+
+
+{0.170000017, 0}, {0.379999995, 0}
