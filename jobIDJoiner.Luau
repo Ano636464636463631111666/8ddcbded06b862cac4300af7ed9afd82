@@ -18,6 +18,8 @@ uc1.Parent = f1
 uc2.Parent = f2
 uc3.Parent = f3
 
+f1.BackgroundColor3 = Color3.fromRGB(255, 203, 46) 
+
 
 gui.Parent = gethui()
 gui.IgnoreGuiInset = false
