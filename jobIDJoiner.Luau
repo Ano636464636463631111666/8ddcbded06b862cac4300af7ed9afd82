@@ -10,9 +10,13 @@ local tb1 = Instance.new("TextBox")
 local tb2 = Instance.new("TextBox") 
 local t2 = Instance.new("TextLabel")
 local t3 = Instance.new("TextLabel")
-local t4 = Instance.new("TextLabel") 
+local t4 = Instance.new("TextLabel")
+local f2 = Instance.new("Frame") 
+local f3 = Instance.new("Frame")
 
 uc1.Parent = f1
+uc2.Parent = f2
+uc3.Parent = f3
 
 
 gui.Parent = gethui()
@@ -22,4 +26,5 @@ f1.AnchorPoint = Vector2.new(0.5, 0.5)
 f1.Size =  UDim2.new(0.17, 0, 0.37,0) 
 f1.Position = UDim2.new(0.5, 0, 0.5, 0) 
 f1.Parent = gui
+
 
