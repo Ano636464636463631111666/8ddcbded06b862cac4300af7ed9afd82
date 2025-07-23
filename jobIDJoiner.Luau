@@ -16,7 +16,7 @@ uc1.Parent = f1
 
 
 gui.Parent = gethui()
-gui.IgnoreGuiInset = true
+gui.IgnoreGuiInset = false
 
 f1.AnchorPoint = Vector2.new(0.5, 0.5) 
 f1.Size =  UDim2.new(0.17, 0, 0.37,0) 
