@@ -1,30 +1,37 @@
-const https = require('https');
-const fs = require('fs');
-const { exec } = require('child_process');
+const mineflayer = require('mineflayer')
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
+const { GoalNear } = goals
 
-const url = 'https://raw.githubusercontent.com/USERNAME/REPO/main/main.js'; // change this to your raw GitHub link
-const filePath = './main.js';
+const bot = mineflayer.createBot({
+  host: 'TESTWorld182.aternos.me',
+  port: 53373,
+  username: 'bot',
+  auth: 'offline',
+  version: '1.21.5'
+})
 
-console.log('Downloading latest bot code from GitHub...');
+bot.loadPlugin(pathfinder)
 
-https.get(url, (res) => {
-  if (res.statusCode !== 200) {
-    console.error(`Failed to download file. Status code: ${res.statusCode}`);
-    res.resume();
-    return;
-  }
+bot.once('spawn', () => {
+  const mcData = require('minecraft-data')(bot.version)
+  const defaultMove = new Movements(bot, mcData)
+  bot.pathfinder.setMovements(defaultMove)
 
-  let data = '';
-  res.on('data', chunk => data += chunk);
-  res.on('end', () => {
-    fs.writeFileSync(filePath, data, 'utf8');
-    console.log('Download complete. Running bot...');
-    exec(`node ${filePath}`, (err, stdout, stderr) => {
-      if (err) console.error(`Error: ${err}`);
-      if (stdout) console.log(stdout);
-      if (stderr) console.error(stderr);
-    });
-  });
-}).on('error', (e) => {
-  console.error(`Error: ${e.message}`);
-});
+  wander()
+})
+
+function wander() {
+  const x = bot.entity.position.x + (Math.random() * 20 - 10)
+  const y = bot.entity.position.y
+  const z = bot.entity.position.z + (Math.random() * 20 - 10)
+
+  bot.chat(`Wandering to (${x.toFixed(0)}, ${z.toFixed(0)})`)
+  bot.pathfinder.setGoal(new GoalNear(x, y, z, 1))
+
+  // Pick a new random spot after reaching this one
+  setTimeout(wander, 8000)
+}
+
+bot.on('death', () => {
+  bot.chat("I died! Respawning...")
+})
