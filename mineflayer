@@ -1,9 +1,14 @@
+// Mineflayer bot script with pathfinding, block collection, and PVP (see documentation/examples01)
 const mineflayer = require('mineflayer');
-const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
-const Vec3 = require('vec3');
-const { GoalNear } = goals;
-const { once } = require('events');
+const pathfinder = require('mineflayer-pathfinder').pathfinder;
+const { Movements, goals: { GoalNear, GoalBlock } } = require('mineflayer-pathfinder');
+const collectBlock = require('mineflayer-collectblock').plugin;
+const pvp = require('mineflayer-pvp').plugin;
+const tool = require('mineflayer-tool').plugin;
+const minecraftData = require('minecraft-data');
+const { Vec3 } = require('vec3');
 
+// Create bot (offline auth for cracked server support)
 const bot = mineflayer.createBot({
   host: 'TESTWorld182.aternos.me',
   port: 53373,
@@ -12,127 +17,139 @@ const bot = mineflayer.createBot({
   auth: 'offline'
 });
 
-bot.loadPlugin(pathfinder);
-
-const attackCounts = new Map();
+// Load plugins: pathfinder for navigation, collectblock for mining, pvp for combat, tool for tool selection
+bot.loadPlugin(pathfinder);    // pathfinder plugin2
+bot.loadPlugin(collectBlock);  // collectBlock plugin for block collection3
+bot.loadPlugin(pvp);           // PVP plugin for attacking
+bot.loadPlugin(tool);          // Tool plugin for auto-equipping best tool
 
 bot.once('spawn', () => {
-  const defaultMove = new Movements(bot);
+  const mcData = minecraftData(bot.version);
+  // Configure pathfinding movements and avoidance4
+  const defaultMove = new Movements(bot, mcData);
+  defaultMove.allow1by1towers = false;  // disable 1x1 tower building
+  defaultMove.canDig = false;           // disable digging while pathing
+  // Avoid lava and flowing lava for safety (dangerous terrain)
+  defaultMove.blocksToAvoid.add(mcData.blocksByName.lava.id);
+  defaultMove.blocksToAvoid.add(mcData.blocksByName.flowing_lava.id);
+  // Avoid creeper entities (by registry name "minecraft:creeper")
+  defaultMove.entitiesToAvoid.add('minecraft:creeper');
   bot.pathfinder.setMovements(defaultMove);
-  bot.chat('Bot spawned and ready!');
+
+  bot.chat('Bot is ready!');
 });
 
-bot.on('chat', async (username, message) => {
-  if (username === bot.username) return;
-
-  const msg = message.toLowerCase();
-
-  if (msg.includes('hello') || msg.includes('hi')) {
-    bot.chat(`Hello ${username}!`);
-  } else if (msg.includes('how are you')) {
-    bot.chat("I'm just a bot, but thanks for asking!");
-  } else if (msg.includes('joke')) {
-    bot.chat("Why don't skeletons fight each other? They don't have the guts!");
-  } else if (msg === 'disconnect') {
-    bot.chat('Disconnecting as requested.');
-    bot.quit();
-  } else if (msg.startsWith('mine ')) {
-    const blockName = msg.slice(5).trim();
-    bot.chat(`Trying to mine ${blockName}...`);
-    await mineBlockByName(blockName);
-  } else if (msg.startsWith('craft ')) {
-    const itemName = msg.slice(6).trim();
-    if (itemName === 'crafting table' || itemName === 'table') {
-      await craftCraftingTable();
-    } else {
-      bot.chat(`Sorry, I can't craft ${itemName} yet.`);
-    }
+// Helper: mine nearest block of given type
+async function mineBlockType(blockName) {
+  const mcData = minecraftData(bot.version);
+  const blockId = mcData.blocksByName[blockName] && mcData.blocksByName[blockName].id;
+  if (!blockId) {
+    bot.chat(`Unknown block type: ${blockName}`);
+    return;
   }
-});
+  const targetBlock = bot.findBlock({
+    matching: blockId,
+    maxDistance: 64
+  });
+  if (!targetBlock) {
+    bot.chat(`No ${blockName} found nearby.`);
+    return;
+  }
+  try {
+    await bot.collectBlock.collect(targetBlock);  // auto-selects tool (mineflayer-tool) and pathfinds to block5
+    bot.chat(`Collected a ${blockName}.`);
+  } catch(err) {
+    bot.chat(`Error collecting ${blockName}: ${err.message}`);
+  }
+}
 
-bot.on('entityHurt', (entity) => {
-  if (entity === bot.entity) {
-    const attacker = bot.players[entity.lastHurtBy]?.entity;
-    if (attacker && attacker.mobType) {
-      const mobName = attacker.mobType || attacker.name || 'something';
-      bot.chat(`I'm being attacked by ${mobName}!`);
+// Helper: craft item if possible
+async function craftItem(itemName) {
+  const mcData = minecraftData(bot.version);
+  // Check items and blocks data
+  const itemData = mcData.itemsByName[itemName] || mcData.blocksByName[itemName];
+  if (!itemData) {
+    bot.chat(`Unknown item: ${itemName}`);
+    return;
+  }
+  const itemId = itemData.id;
+  // Check existing inventory
+  if (bot.inventory.count(itemId, null) > 0) {
+    bot.chat(`I already have some ${itemName}.`);
+    return;
+  }
+  // Find a crafting recipe
+  const recipes = bot.recipesFor(itemId, null, 1);
+  if (!recipes || recipes.length === 0) {
+    bot.chat(`No recipe found for ${itemName}.`);
+    return;
+  }
+  const recipe = recipes[0];
+  // Find a nearby crafting table if needed (for 3x3 recipes)
+  const tableBlock = bot.findBlock({
+    matching: minecraftData(bot.version).blocksByName.crafting_table.id,
+    maxDistance: 32
+  });
+  try {
+    await bot.craft(recipe, 1, tableBlock || null);
+    bot.chat(`Crafted 1 ${itemName}.`);
+  } catch(err) {
+    bot.chat(`Failed to craft ${itemName}: ${err.message}`);
+  }
+}
 
-      const count = attackCounts.get(attacker.id) || 0;
-      attackCounts.set(attacker.id, count + 1);
-
-      if (attackCounts.get(attacker.id) >= 3) {
-        bot.chat(`That's it! I'm fighting back against ${mobName}!`);
-        bot.pathfinder.setGoal(new GoalNear(attacker.position.x, attacker.position.y, attacker.position.z, 1));
-        bot.attack(attacker);
+// Track last health to detect damage, and count attacks
+let lastHealth = bot.health;
+let attackCount = 0;
+bot.on('health', () => {
+  // If health decreased, bot was hurt
+  if (bot.health < lastHealth) {
+    attackCount++;
+    // Find nearest mob (excluding creepers) to assume as attacker
+    const possibleAttackers = Object.values(bot.entities).filter(e => 
+      e && e.type === 'mob' && e.mobType && e.mobType.toLowerCase() !== 'creeper'
+    );
+    if (possibleAttackers.length > 0) {
+      const attacker = possibleAttackers[0];
+      bot.chat(`Ouch, a ${attacker.displayName} hurt me!`);  // using entity.displayName6
+      if (attackCount >= 3) {
+        bot.chat(`I'll get you, ${attacker.displayName}!`);
+        bot.pvp.attack(attacker);
+        attackCount = 0;
       }
     }
   }
+  lastHealth = bot.health;
 });
 
-bot.on('physicTick', () => {
-  // Avoid lava/fire silently
-  const lavaNearby = bot.findBlock({
-    matching: block => block.name.includes('lava') || block.name.includes('fire'),
-    maxDistance: 3
-  });
-
-  if (lavaNearby) {
-    const opposite = bot.entity.position.minus(lavaNearby.position);
-    const safePos = bot.entity.position.plus(opposite.scaled(3));
-    bot.pathfinder.setGoal(new GoalNear(safePos.x, safePos.y, safePos.z, 1));
-    return;
-  }
-
-  // Creeper panic
-  const creepers = Object.values(bot.entities).filter(e => e.mobType === 'Creeper' && e.position.distanceTo(bot.entity.position) < 6);
-
-  if (creepers.length > 0) {
-    const away = bot.entity.position.minus(creepers[0].position);
-    const runTo = bot.entity.position.plus(away.scaled(5));
-    bot.pathfinder.setGoal(new GoalNear(runTo.x, runTo.y, runTo.z, 1));
-    if (creepers.length === 1) {
-      bot.chat('Ahhh, creeper!');
-    } else {
-      bot.chat('Ahhh, creepers!');
-    }
+// Respond to creeper spawns (avoid them and announce)
+bot.on('entitySpawn', entity => {
+  if (entity.type === 'mob' && entity.mobType && entity.mobType.toLowerCase() === 'creeper') {
+    // Count creepers in vicinity
+    const creeperCount = Object.values(bot.entities).filter(e => 
+      e && e.type === 'mob' && e.mobType && e.mobType.toLowerCase() === 'creeper'
+    ).length;
+    if (creeperCount > 1) bot.chat('Ahhh creepers!');
+    else bot.chat('Ahhh creeper!');
+    // Flee: set goal to move away from creeper
+    const pos = bot.entity.position;
+    const fleePos = pos.offset((Math.random()-0.5)*20, 0, (Math.random()-0.5)*20);
+    bot.pathfinder.setGoal(new GoalBlock(Math.floor(fleePos.x), Math.floor(fleePos.y), Math.floor(fleePos.z)));
   }
 });
 
-// Helper function to mine a block by name
-async function mineBlockByName(name) {
-  const block = bot.findBlock({
-    matching: b => b.name === name,
-    maxDistance: 32
-  });
-
-  if (!block) {
-    bot.chat(`I can't find any ${name} nearby.`);
-    return;
+// Handle chat commands
+bot.on('chat', (username, message) => {
+  if (username === bot.username) return;
+  const msg = message.toLowerCase();
+  if (msg === 'disconnect') {
+    bot.chat('Disconnecting...');
+    bot.quit();
+  } else if (msg.startsWith('mine ')) {
+    const blockName = msg.split(' ')[1];
+    mineBlockType(blockName);
+  } else if (msg.startsWith('craft ')) {
+    const itemName = msg.split(' ')[1];
+    craftItem(itemName);
   }
-
-  try {
-    await bot.pathfinder.goto(new GoalNear(block.position.x, block.position.y, block.position.z, 1));
-    await bot.dig(block);
-    bot.chat(`Mined some ${name}!`);
-  } catch (err) {
-    bot.chat(`Failed to mine ${name}: ${err.message}`);
-  }
-}
-
-// Helper function to craft a crafting table if possible
-async function craftCraftingTable() {
-  const craftingTableId = 58; // Minecraft ID for crafting table
-  const recipe = bot.recipesFor(craftingTableId, null, 1)[0];
-
-  if (!recipe) {
-    bot.chat("I don't know how to craft a crafting table.");
-    return;
-  }
-
-  try {
-    await bot.craft(recipe, 1, null);
-    bot.chat('Crafted a crafting table!');
-  } catch (err) {
-    bot.chat('Failed to craft a crafting table: ' + err.message);
-  }
-}
+});
