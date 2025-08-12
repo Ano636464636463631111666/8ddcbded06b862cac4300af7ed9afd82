@@ -1,0 +1,30 @@
+const https = require('https');
+const fs = require('fs');
+const { exec } = require('child_process');
+
+const url = 'https://raw.githubusercontent.com/USERNAME/REPO/main/main.js'; // change this to your raw GitHub link
+const filePath = './main.js';
+
+console.log('Downloading latest bot code from GitHub...');
+
+https.get(url, (res) => {
+  if (res.statusCode !== 200) {
+    console.error(`Failed to download file. Status code: ${res.statusCode}`);
+    res.resume();
+    return;
+  }
+
+  let data = '';
+  res.on('data', chunk => data += chunk);
+  res.on('end', () => {
+    fs.writeFileSync(filePath, data, 'utf8');
+    console.log('Download complete. Running bot...');
+    exec(`node ${filePath}`, (err, stdout, stderr) => {
+      if (err) console.error(`Error: ${err}`);
+      if (stdout) console.log(stdout);
+      if (stderr) console.error(stderr);
+    });
+  });
+}).on('error', (e) => {
+  console.error(`Error: ${e.message}`);
+});
