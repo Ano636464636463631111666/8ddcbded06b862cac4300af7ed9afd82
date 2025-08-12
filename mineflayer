@@ -1,37 +1,103 @@
-const mineflayer = require('mineflayer')
-const { pathfinder, Movements, goals } = require('mineflayer-pathfinder')
-const { GoalNear } = goals
+const mineflayer = require('mineflayer');
+const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
+const { NlpManager } = require('node-nlp');
+const mcData = require('minecraft-data');
 
+// Create bot
 const bot = mineflayer.createBot({
   host: 'TESTWorld182.aternos.me',
   port: 53373,
   username: 'bot',
-  auth: 'offline',
-  version: '1.21.5'
-})
+  version: '1.21.5',
+  auth: 'offline' // cracked mode
+});
 
-bot.loadPlugin(pathfinder)
+// Load pathfinder plugin
+bot.loadPlugin(pathfinder);
 
-bot.once('spawn', () => {
-  const mcData = require('minecraft-data')(bot.version)
-  const defaultMove = new Movements(bot, mcData)
-  bot.pathfinder.setMovements(defaultMove)
+// Setup NLP manager
+const manager = new NlpManager({ languages: ['en'], forceNER: true });
 
-  wander()
-})
+// Train NLP intents and responses
+async function trainNLP() {
+  manager.addDocument('en', 'hello', 'greetings.hello');
+  manager.addDocument('en', 'hi', 'greetings.hello');
+  manager.addDocument('en', 'hey', 'greetings.hello');
 
-function wander() {
-  const x = bot.entity.position.x + (Math.random() * 20 - 10)
-  const y = bot.entity.position.y
-  const z = bot.entity.position.z + (Math.random() * 20 - 10)
+  manager.addDocument('en', 'mine', 'action.mine');
+  manager.addDocument('en', 'start mining', 'action.mine');
+  manager.addDocument('en', 'dig', 'action.mine');
 
-  bot.chat(`Wandering to (${x.toFixed(0)}, ${z.toFixed(0)})`)
-  bot.pathfinder.setGoal(new GoalNear(x, y, z, 1))
+  manager.addDocument('en', 'how are you', 'smalltalk.howareyou');
 
-  // Pick a new random spot after reaching this one
-  setTimeout(wander, 8000)
+  manager.addAnswer('en', 'greetings.hello', 'Hello there!');
+  manager.addAnswer('en', 'smalltalk.howareyou', "I'm just a bot, but I'm doing great!");
+  manager.addAnswer('en', 'action.mine', "Alright, let's start mining!");
+
+  await manager.train();
+  manager.save();
 }
 
-bot.on('death', () => {
-  bot.chat("I died! Respawning...")
-})
+// Run training on start
+trainNLP();
+
+bot.once('spawn', () => {
+  const mcDataInstance = mcData(bot.version);
+  const defaultMove = new Movements(bot, mcDataInstance);
+  bot.pathfinder.setMovements(defaultMove);
+
+  bot.chat("Hi! I'm online and ready.");
+});
+
+bot.on('chat', async (username, message) => {
+  if (username === bot.username) return; // Ignore own messages
+
+  const response = await manager.process('en', message);
+
+  if (response.intent === 'greetings.hello') {
+    bot.chat(response.answer);
+  } else if (response.intent === 'action.mine') {
+    bot.chat(response.answer);
+    mineNearestOre();
+  } else if (response.intent === 'smalltalk.howareyou') {
+    bot.chat(response.answer);
+  } else if (message.toLowerCase() === 'disconnect') {
+    bot.chat('Disconnecting as requested.');
+    bot.quit();
+  } else {
+    bot.chat("Sorry, I didn't understand that.");
+  }
+});
+
+async function mineNearestOre() {
+  const mcDataInstance = mcData(bot.version);
+  const ores = [
+    mcDataInstance.blocksByName['coal_ore'],
+    mcDataInstance.blocksByName['iron_ore'],
+    mcDataInstance.blocksByName['gold_ore'],
+    mcDataInstance.blocksByName['diamond_ore'],
+    mcDataInstance.blocksByName['emerald_ore'],
+    mcDataInstance.blocksByName['redstone_ore'],
+    mcDataInstance.blocksByName['lapis_ore'],
+  ];
+
+  const target = bot.findBlock({
+    matching: block => ores.some(ore => ore.id === block.type),
+    maxDistance: 32
+  });
+
+  if (!target) {
+    bot.chat("I can't find any ores nearby.");
+    return;
+  }
+
+  bot.chat(`Mining ${target.name} at ${target.position.x}, ${target.position.y}, ${target.position.z}`);
+
+  try {
+    await bot.pathfinder.goto(new goals.GoalBlock(target.position.x, target.position.y, target.position.z));
+    await bot.dig(target);
+    bot.chat("Done mining!");
+  } catch (err) {
+    bot.chat("Oops, I couldn't mine that.");
+  }
+}
