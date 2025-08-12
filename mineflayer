@@ -1,103 +1,138 @@
 const mineflayer = require('mineflayer');
 const { pathfinder, Movements, goals } = require('mineflayer-pathfinder');
-const { NlpManager } = require('node-nlp');
-const mcData = require('minecraft-data');
+const Vec3 = require('vec3');
+const { GoalNear } = goals;
+const { once } = require('events');
 
-// Create bot
 const bot = mineflayer.createBot({
   host: 'TESTWorld182.aternos.me',
   port: 53373,
   username: 'bot',
   version: '1.21.5',
-  auth: 'offline' // cracked mode
+  auth: 'offline'
 });
 
-// Load pathfinder plugin
 bot.loadPlugin(pathfinder);
 
-// Setup NLP manager
-const manager = new NlpManager({ languages: ['en'], forceNER: true });
-
-// Train NLP intents and responses
-async function trainNLP() {
-  manager.addDocument('en', 'hello', 'greetings.hello');
-  manager.addDocument('en', 'hi', 'greetings.hello');
-  manager.addDocument('en', 'hey', 'greetings.hello');
-
-  manager.addDocument('en', 'mine', 'action.mine');
-  manager.addDocument('en', 'start mining', 'action.mine');
-  manager.addDocument('en', 'dig', 'action.mine');
-
-  manager.addDocument('en', 'how are you', 'smalltalk.howareyou');
-
-  manager.addAnswer('en', 'greetings.hello', 'Hello there!');
-  manager.addAnswer('en', 'smalltalk.howareyou', "I'm just a bot, but I'm doing great!");
-  manager.addAnswer('en', 'action.mine', "Alright, let's start mining!");
-
-  await manager.train();
-  manager.save();
-}
-
-// Run training on start
-trainNLP();
+const attackCounts = new Map();
 
 bot.once('spawn', () => {
-  const mcDataInstance = mcData(bot.version);
-  const defaultMove = new Movements(bot, mcDataInstance);
+  const defaultMove = new Movements(bot);
   bot.pathfinder.setMovements(defaultMove);
-
-  bot.chat("Hi! I'm online and ready.");
+  bot.chat('Bot spawned and ready!');
 });
 
 bot.on('chat', async (username, message) => {
-  if (username === bot.username) return; // Ignore own messages
+  if (username === bot.username) return;
 
-  const response = await manager.process('en', message);
+  const msg = message.toLowerCase();
 
-  if (response.intent === 'greetings.hello') {
-    bot.chat(response.answer);
-  } else if (response.intent === 'action.mine') {
-    bot.chat(response.answer);
-    mineNearestOre();
-  } else if (response.intent === 'smalltalk.howareyou') {
-    bot.chat(response.answer);
-  } else if (message.toLowerCase() === 'disconnect') {
+  if (msg.includes('hello') || msg.includes('hi')) {
+    bot.chat(`Hello ${username}!`);
+  } else if (msg.includes('how are you')) {
+    bot.chat("I'm just a bot, but thanks for asking!");
+  } else if (msg.includes('joke')) {
+    bot.chat("Why don't skeletons fight each other? They don't have the guts!");
+  } else if (msg === 'disconnect') {
     bot.chat('Disconnecting as requested.');
     bot.quit();
-  } else {
-    bot.chat("Sorry, I didn't understand that.");
+  } else if (msg.startsWith('mine ')) {
+    const blockName = msg.slice(5).trim();
+    bot.chat(`Trying to mine ${blockName}...`);
+    await mineBlockByName(blockName);
+  } else if (msg.startsWith('craft ')) {
+    const itemName = msg.slice(6).trim();
+    if (itemName === 'crafting table' || itemName === 'table') {
+      await craftCraftingTable();
+    } else {
+      bot.chat(`Sorry, I can't craft ${itemName} yet.`);
+    }
   }
 });
 
-async function mineNearestOre() {
-  const mcDataInstance = mcData(bot.version);
-  const ores = [
-    mcDataInstance.blocksByName['coal_ore'],
-    mcDataInstance.blocksByName['iron_ore'],
-    mcDataInstance.blocksByName['gold_ore'],
-    mcDataInstance.blocksByName['diamond_ore'],
-    mcDataInstance.blocksByName['emerald_ore'],
-    mcDataInstance.blocksByName['redstone_ore'],
-    mcDataInstance.blocksByName['lapis_ore'],
-  ];
+bot.on('entityHurt', (entity) => {
+  if (entity === bot.entity) {
+    const attacker = bot.players[entity.lastHurtBy]?.entity;
+    if (attacker && attacker.mobType) {
+      const mobName = attacker.mobType || attacker.name || 'something';
+      bot.chat(`I'm being attacked by ${mobName}!`);
 
-  const target = bot.findBlock({
-    matching: block => ores.some(ore => ore.id === block.type),
-    maxDistance: 32
+      const count = attackCounts.get(attacker.id) || 0;
+      attackCounts.set(attacker.id, count + 1);
+
+      if (attackCounts.get(attacker.id) >= 3) {
+        bot.chat(`That's it! I'm fighting back against ${mobName}!`);
+        bot.pathfinder.setGoal(new GoalNear(attacker.position.x, attacker.position.y, attacker.position.z, 1));
+        bot.attack(attacker);
+      }
+    }
+  }
+});
+
+bot.on('physicTick', () => {
+  // Avoid lava/fire silently
+  const lavaNearby = bot.findBlock({
+    matching: block => block.name.includes('lava') || block.name.includes('fire'),
+    maxDistance: 3
   });
 
-  if (!target) {
-    bot.chat("I can't find any ores nearby.");
+  if (lavaNearby) {
+    const opposite = bot.entity.position.minus(lavaNearby.position);
+    const safePos = bot.entity.position.plus(opposite.scaled(3));
+    bot.pathfinder.setGoal(new GoalNear(safePos.x, safePos.y, safePos.z, 1));
     return;
   }
 
-  bot.chat(`Mining ${target.name} at ${target.position.x}, ${target.position.y}, ${target.position.z}`);
+  // Creeper panic
+  const creepers = Object.values(bot.entities).filter(e => e.mobType === 'Creeper' && e.position.distanceTo(bot.entity.position) < 6);
+
+  if (creepers.length > 0) {
+    const away = bot.entity.position.minus(creepers[0].position);
+    const runTo = bot.entity.position.plus(away.scaled(5));
+    bot.pathfinder.setGoal(new GoalNear(runTo.x, runTo.y, runTo.z, 1));
+    if (creepers.length === 1) {
+      bot.chat('Ahhh, creeper!');
+    } else {
+      bot.chat('Ahhh, creepers!');
+    }
+  }
+});
+
+// Helper function to mine a block by name
+async function mineBlockByName(name) {
+  const block = bot.findBlock({
+    matching: b => b.name === name,
+    maxDistance: 32
+  });
+
+  if (!block) {
+    bot.chat(`I can't find any ${name} nearby.`);
+    return;
+  }
 
   try {
-    await bot.pathfinder.goto(new goals.GoalBlock(target.position.x, target.position.y, target.position.z));
-    await bot.dig(target);
-    bot.chat("Done mining!");
+    await bot.pathfinder.goto(new GoalNear(block.position.x, block.position.y, block.position.z, 1));
+    await bot.dig(block);
+    bot.chat(`Mined some ${name}!`);
   } catch (err) {
-    bot.chat("Oops, I couldn't mine that.");
+    bot.chat(`Failed to mine ${name}: ${err.message}`);
+  }
+}
+
+// Helper function to craft a crafting table if possible
+async function craftCraftingTable() {
+  const craftingTableId = 58; // Minecraft ID for crafting table
+  const recipe = bot.recipesFor(craftingTableId, null, 1)[0];
+
+  if (!recipe) {
+    bot.chat("I don't know how to craft a crafting table.");
+    return;
+  }
+
+  try {
+    await bot.craft(recipe, 1, null);
+    bot.chat('Crafted a crafting table!');
+  } catch (err) {
+    bot.chat('Failed to craft a crafting table: ' + err.message);
   }
 }
