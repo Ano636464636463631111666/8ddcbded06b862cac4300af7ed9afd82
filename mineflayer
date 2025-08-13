@@ -1,407 +1,98 @@
-// mineflayer.js — full fixed bot for 1.21.5 (Termux-friendly)
+// Mineflayer bot script for Minecraft 1.21.5
+// Connects to TESTWorld182.aternos.me:53373 with username "bot".
+// Assumes Node.js and mineflayer (plus dependencies) are installed in Termux.
 
-// ===== Imports =====
 const mineflayer = require('mineflayer');
-const { pathfinder, Movements, goals: { GoalNear, GoalBlock } } = require('mineflayer-pathfinder');
-const collectBlock = require('mineflayer-collectblock').plugin;
-const pvp = require('mineflayer-pvp').plugin;
-const tool = require('mineflayer-tool').plugin;
-const mcDataLoader = require('minecraft-data');
-const Vec3 = require('vec3');
+const Vec3 = require('vec3').Vec3;
 
-// ===== Config (your server) =====
-const CONFIG = {
-  host: 'TESTWorld182.aternos.me',
-  port: 53373,
-  username: 'bot',
-  version: '1.21.5',
-  auth: 'offline',
-  checkTimeoutInterval: 60_000 // keepalive timeout (60s) to reduce random timeouts
+// -----------------------------------------------------------------------------
+// Patch 1: Safe Vec3.add to avoid crashing on undefined input
+// If an undefined or invalid vector is added, return the original vector.
+const originalVec3Add = Vec3.prototype.add;
+Vec3.prototype.add = function (v) {
+  if (!v || typeof v.x !== 'number' || typeof v.y !== 'number' || typeof v.z !== 'number') {
+    // Invalid vector: ignore addition to prevent crash
+    return this;
+  }
+  return originalVec3Add.call(this, v);
 };
 
-// ===== Globals for reconnect logic =====
-let manualQuit = false;   // set true when user says 'disconnect'
-let reconnectDelayMs = 5000;
-
-// ===== Start/Restart factory =====
-startBot();
-
-function startBot () {
-  manualQuit = false;
-
-  const bot = mineflayer.createBot({
-    host: CONFIG.host,
-    port: CONFIG.port,
-    username: CONFIG.username,
-    version: CONFIG.version,
-    auth: CONFIG.auth,
-    checkTimeoutInterval: CONFIG.checkTimeoutInterval
-  });
-
-  // ---- Plugins ----
-  bot.loadPlugin(pathfinder);
-  bot.loadPlugin(collectBlock);
-  bot.loadPlugin(pvp);
-  bot.loadPlugin(tool);
-
-  // ---- Data & movement ----
-  let mcData;
-  let defaultMove;
-  let lastKeepAlive = Date.now();
-  let physicsBusy = false; // throttle physicsTick work
-  const attackerHits = new Map(); // entityId -> count
-
-  bot.once('spawn', () => {
-    mcData = mcDataLoader(bot.version);
-    defaultMove = new Movements(bot, mcData);
-    defaultMove.allow1by1towers = false;
-    defaultMove.canDig = false; // pathing won't dig, we handle mining with collectBlock
-    // Avoid lava blocks quietly
-    addIf(mcData.blocksByName.lava, id => defaultMove.blocksToAvoid.add(id));
-    addIf(mcData.blocksByName.flowing_lava, id => defaultMove.blocksToAvoid.add(id));
-    bot.pathfinder.setMovements(defaultMove);
-    bot.chat('Ready!');
-  });
-
-  // ---- Tiny keepalive to avoid AFK/idle issues (no spam) ----
-  setInterval(() => {
-    // Send a tiny, non-spammy packet by rotating a fraction (client-side) to keep activity,
-    // and only chat ping rarely if long idle.
-    try {
-      bot.look(bot.yaw, bot.pitch, true); // noop rotate (fast, silent)
-    } catch {}
-    if (Date.now() - lastKeepAlive > 120000) { // every ~2 min
-      try { bot.chat('.'); } catch {}
-      lastKeepAlive = Date.now();
-    }
-  }, 25_000);
-
-  // ---- Chat commands ----
-  bot.on('chat', (username, message) => {
-    if (username === bot.username) return;
-    const msg = message.trim().toLowerCase();
-
-    if (msg === 'disconnect') {
-      manualQuit = true;
-      bot.chat('Disconnecting...');
-      try { bot.quit(); } catch {}
-      return;
-    }
-
-    if (['hi', 'hello', 'hey'].includes(msg)) {
-      bot.chat(`Hey ${username}!`);
-      return;
-    }
-
-    if (msg.startsWith('mine ')) {
-      const what = msg.slice(5).trim();
-      if (!what) return;
-      if (what === 'wood') mineWood(bot, mcData).catch(err => sayErr(bot, err));
-      else mineOre(bot, mcData, what).catch(err => sayErr(bot, err));
-      return;
-    }
-
-    if (msg.startsWith('craft ')) {
-      const item = msg.slice(6).trim();
-      if (!item) return;
-      craftItem(bot, mcData, item).catch(err => sayErr(bot, err));
-      return;
-    }
-  });
-
-  // ---- Combat & danger handling ----
-  // Count hits; fight back after 3 from the same attacker
-  bot.on('entityHurt', (entity) => {
-    if (entity !== bot.entity) return;
-
-    const attacker = nearestMob(bot, 6);
-    const attackerId = attacker ? attacker.id : 'unknown';
-    const name = attacker?.displayName || attacker?.name || 'something';
-    bot.chat(`I'm being attacked by ${name}!`);
-
-    const n = (attackerHits.get(attackerId) || 0) + 1;
-    attackerHits.set(attackerId, n);
-    if (n >= 3 && attacker) {
-      bot.chat(`That's it, fighting back ${name}!`);
-      try {
-        if (bot.pvp && typeof bot.pvp.attack === 'function') bot.pvp.attack(attacker);
-        else bot.attack(attacker);
-      } catch (e) { console.log('attack error', e.message); }
-      attackerHits.set(attackerId, 0);
-    }
-  });
-
-  // Single physicsTick (correct event name) — creeper panic + silent lava avoidance
-  bot.on('physicsTick', () => {
-    if (!mcData || physicsBusy) return;
-    physicsBusy = true;
-
-    try {
-      // 1) Silent lava avoidance (no chat)
-      const lava = bot.findBlock({
-        matching: b => !!b && !!b.name && (b.name.includes('lava')),
-        maxDistance: 3
-      });
-      if (lava) {
-        fleeFrom(bot, lava.position, 4);
-        return;
-      }
-
-      // 2) Creeper check (warn + flee)
-      const creepers = listMobs(bot, m => (m.displayName?.toLowerCase().includes('creeper') || m.name?.toLowerCase() === 'creeper') && dist(bot, m) < 6);
-      if (creepers.length > 0) {
-        if (creepers.length === 1) bot.chat('Ahhh creeper!');
-        else bot.chat('Ahhh creepers!');
-        fleeFrom(bot, creepers[0].position, 6);
-        return;
-      }
-    } finally {
-      physicsBusy = false;
-    }
-  });
-
-  // ---- Death/respawn housekeeping ----
-  bot.on('death', () => {
-    attackerHits.clear();
-    // No chat spam; bot typically auto-respawns client-side. If your server kicks on death,
-    // 'end' handler below will reconnect.
-  });
-
-  bot.on('respawn', () => {
-    attackerHits.clear();
-    // Re-apply default movements just in case
-    try { if (defaultMove) bot.pathfinder.setMovements(defaultMove); } catch {}
-  });
-
-  // ---- Robust reconnect on end/kicked unless manualQuit ----
-  bot.on('end', (reason) => {
-    console.log('Connection ended:', reason);
-    if (manualQuit) return;
-    setTimeout(() => {
-      console.log('Reconnecting...');
-      startBot();
-    }, reconnectDelayMs);
-  });
-
-  bot.on('kicked', (reason) => {
-    console.log('Kicked:', reason);
-  });
-
-  // ===== Helpers =====
-
-  function sayErr (bot, err) {
-    const msg = (err && (err.message || String(err))) || 'Unknown error';
-    try { bot.chat(`Error: ${msg}`); } catch {}
-  }
-
-  function addIf (entry, fn) { if (entry?.id != null) fn(entry.id); }
-
-  function nearestMob (bot, within = 6) {
-    let best = null;
-    let bestD = Infinity;
-    for (const e of Object.values(bot.entities)) {
-      if (e?.type === 'mob' && e.position) {
-        const d = bot.entity.position.distanceTo(e.position);
-        if (d < within && d < bestD) { bestD = d; best = e; }
-      }
-    }
-    return best;
-  }
-
-  function listMobs (bot, predicate) {
-    const out = [];
-    for (const e of Object.values(bot.entities)) {
-      if (e?.type === 'mob' && e.position) {
-        if (!predicate || predicate(e)) out.push(e);
-      }
-    }
-    return out;
-  }
-
-  function dist (bot, entity) {
-    return bot.entity.position.distanceTo(entity.position);
-    }
-
-  function fleeFrom (bot, fromPos, distance = 5) {
-    if (!fromPos) return;
-    const away = bot.entity.position.minus(fromPos);
-    const runTo = bot.entity.position.plus(away.normalize().scaled(distance));
-    try {
-      bot.pathfinder.setGoal(new GoalNear(Math.floor(runTo.x), Math.floor(runTo.y), Math.floor(runTo.z), 1));
-    } catch {}
-  }
-
-  // ===== Mining & Crafting =====
-
-  // Map simple ore names -> valid block names (incl. deepslate)
-  function oreNameVariants (name) {
-    const n = name.toLowerCase();
-    const map = {
-      coal: ['coal_ore', 'deepslate_coal_ore'],
-      iron: ['iron_ore', 'deepslate_iron_ore'],
-      gold: ['gold_ore', 'deepslate_gold_ore'],
-      diamond: ['diamond_ore', 'deepslate_diamond_ore'],
-      redstone: ['redstone_ore', 'deepslate_redstone_ore'],
-      lapis: ['lapis_ore', 'deepslate_lapis_ore'],
-      emerald: ['emerald_ore'] // usually mountain biomes
-    };
-    return map[n] || [name];
-  }
-
-  async function mineOre (bot, mcData, nameOrBlock) {
-    if (!mcData) mcData = mcDataLoader(bot.version);
-
-    const variants = oreNameVariants(nameOrBlock);
-    const ids = variants
-      .map(v => mcData.blocksByName[v]?.id)
-      .filter(Boolean);
-
-    if (ids.length === 0) {
-      bot.chat(`I don't recognize "${nameOrBlock}" as an ore I can mine.`);
-      return;
-    }
-
-    const target = bot.findBlock({
-      matching: b => ids.includes(b?.type),
-      maxDistance: 64,
-      useExtraInfo: true
+// -----------------------------------------------------------------------------
+// Patch 2: Safe enchantment reading to bypass NBT errors
+// Preload prismarine-item with version 1.21.5 and wrap its enchantment getter
+try {
+  const Item = require('prismarine-item')('1.21.5');
+  const enchantDescriptor = Object.getOwnPropertyDescriptor(Item.prototype, 'enchants');
+  if (enchantDescriptor) {
+    Object.defineProperty(Item.prototype, 'enchants', {
+      get: function () {
+        try {
+          // Original enchantment parsing
+          return enchantDescriptor.get.call(this);
+        } catch (err) {
+          // On error (new NBT format in 1.21.5), strip enchantment tags and return empty list
+          if (this.nbt) {
+            delete this.nbt.Enchantments;
+            delete this.nbt.enchantments;
+          }
+          return [];
+        }
+      },
+      set: enchantDescriptor.set
     });
-
-    if (!target) {
-      bot.chat(`I can't find any ${nameOrBlock} nearby.`);
-      return;
-    }
-
-    // Equip best tool (considers enchantments if available)
-    await equipBestToolForBlock(bot, mcData, target);
-
-    bot.chat(`Mining ${target.name} at ${target.position.x},${target.position.y},${target.position.z}...`);
-    try {
-      await bot.collectBlock.collect(target);
-      bot.chat(`Mined ${target.name}!`);
-    } catch (err) {
-      sayErr(bot, err);
-    }
   }
-
-  async function mineWood (bot, mcData) {
-    if (!mcData) mcData = mcDataLoader(bot.version);
-    const logNames = Object.keys(mcData.blocksByName).filter(n => n.endsWith('_log') || n.endsWith('_wood'));
-    const ids = logNames.map(n => mcData.blocksByName[n]?.id).filter(Boolean);
-
-    const target = bot.findBlock({
-      matching: b => ids.includes(b?.type),
-      maxDistance: 64,
-      useExtraInfo: true
-    });
-    if (!target) {
-      bot.chat("I can't find any wood nearby.");
-      return;
-    }
-
-    await equipBestToolForBlock(bot, mcData, target);
-
-    bot.chat(`Chopping ${target.name}...`);
-    try {
-      await bot.collectBlock.collect(target);
-      bot.chat('Wood collected!');
-    } catch (err) {
-      sayErr(bot, err);
-    }
-  }
-
-  // Prefer the best tool based on material + enchantments (if enchant data is available)
-  async function equipBestToolForBlock (bot, mcData, block) {
-    // Decide needed tool family
-    const isWood = (block.name?.includes('log') || block.name?.includes('wood'));
-    const family = isWood ? ['netherite_axe','diamond_axe','iron_axe','stone_axe','wooden_axe']
-                          : ['netherite_pickaxe','diamond_pickaxe','iron_pickaxe','stone_pickaxe','wooden_pickaxe'];
-
-    const familyIds = family.map(n => mcData.itemsByName[n]?.id).filter(Boolean);
-
-    // Score tools we have
-    const tools = bot.inventory.items().filter(i => familyIds.includes(i.type));
-    if (tools.length === 0) return false;
-
-    let best = null;
-    let bestScore = -1;
-    for (const it of tools) {
-      const baseScore = materialScore(mcData, it.name); // netherite > diamond > iron > stone > wood
-      const eff = getEnchantLevelSafe(it, 'efficiency'); // 0 if unsupported/unavailable
-      const unb = getEnchantLevelSafe(it, 'unbreaking');
-      const score = baseScore + eff * 2 + unb * 0.5; // prioritize Efficiency strongly
-      if (score > bestScore) { bestScore = score; best = it; }
-    }
-
-    if (best) {
-      try { await bot.equip(best, 'hand'); } catch {}
-      return true;
-    }
-    return false;
-  }
-
-  function materialScore (mcData, name = '') {
-    // rough ranking
-    if (name.includes('netherite')) return 100;
-    if (name.includes('diamond')) return 80;
-    if (name.includes('iron')) return 60;
-    if (name.includes('stone')) return 40;
-    if (name.includes('wood')) return 20;
-    if (name.includes('gold')) return 10; // fast but fragile
-    return 0;
-  }
-
-  // Try to read enchantments if Mineflayer/prismarine-item supports it for this version.
-  // Falls back to 0 (no crash) if not supported on 1.21.5.
-  function getEnchantLevelSafe (item, wantedName) {
-    try {
-      if (!item || !item.enchants) return 0;
-      const found = item.enchants.find(e => (e.name || '').toLowerCase().includes(wantedName));
-      return found ? (found.lvl || 0) : 0;
-    } catch {
-      return 0;
-    }
-  }
-
-  // Crafting: tries simple name resolution and nearby table if needed
-  async function craftItem (bot, mcData, name) {
-    if (!mcData) mcData = mcDataLoader(bot.version);
-
-    const alias = {
-      'crafting table': 'crafting_table',
-      'table': 'crafting_table',
-      'sticks': 'stick',
-      'planks': 'oak_planks',
-      'plank': 'oak_planks'
-    };
-    const targetName = alias[name.toLowerCase()] || name.toLowerCase();
-
-    const itemData = mcData.itemsByName[targetName] || mcData.blocksByName[targetName];
-    if (!itemData) {
-      bot.chat(`I don't know how to craft "${name}".`);
-      return;
-    }
-
-    // Already have it?
-    if (bot.inventory.count(itemData.id, null) > 0) {
-      bot.chat(`I already have ${targetName}.`);
-      return;
-    }
-
-    // Find recipe (mineflayer handles 2x2 vs 3x3)
-    const table = bot.findBlock({ matching: mcData.blocksByName.crafting_table?.id, maxDistance: 32 }) || null;
-    const recipes = bot.recipesFor(itemData.id, null, 1, table);
-    if (!recipes || recipes.length === 0) {
-      bot.chat(`No recipe for ${targetName}.`);
-      return;
-    }
-
-    // Try to craft
-    try {
-      await bot.craft(recipes[0], 1, table);
-      bot.chat(`Crafted ${targetName}!`);
-    } catch (err) {
-      bot.chat(`Can't craft ${targetName}: ${err.message || err}`);
-    }
-  }
+} catch (e) {
+  console.warn('Failed to patch enchantment NBT handling:', e);
 }
+
+// -----------------------------------------------------------------------------
+// Function to create and start the bot (and to restart it on disconnect)
+function startBot() {
+  const bot = mineflayer.createBot({
+    host: 'TESTWorld182.aternos.me',
+    port: 53373,
+    username: 'bot',
+    version: '1.21.5',   // specify Minecraft version for compatibility
+  });
+
+  // Log basic events
+  bot.on('spawn', () => {
+    console.log('Bot spawned in the world.');
+    // Example action on spawn: say hello (comment out if not needed)
+    // bot.chat('Hello, I am ready!');
+  });
+
+  // Disconnect/reconnect handling
+  bot.on('end', () => {
+    console.log('Bot disconnected. Attempting to reconnect in 5s...');
+    setTimeout(startBot, 5000);
+  });
+  bot.on('kicked', (reason) => {
+    console.log('Bot was kicked from the server. Reason:', reason);
+  });
+  bot.on('error', (err) => {
+    console.error('Bot encountered an error:', err);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Movement safeguard: track last position each physics tick
+  let lastPos = null;
+  bot.on('physicsTick', () => {
+    const pos = bot.entity.position;
+    if (lastPos) {
+      const dx = pos.x - lastPos.x;
+      const dy = pos.y - lastPos.y;
+      const dz = pos.z - lastPos.z;
+      // If moved more than ~1 block in any direction in one tick, clear movement
+      if (Math.abs(dx) > 1 || Math.abs(dy) > 1 || Math.abs(dz) > 1) {
+        bot.clearControlStates();
+      }
+    }
+    lastPos = pos.clone();
+  });
+
+  // Additional bot behavior can be added here, e.g. responding to chat, pathfinding, etc.
+}
+
+// Start the bot for the first time
+startBot();
