@@ -1,98 +1,62 @@
-// Mineflayer bot script for Minecraft 1.21.5
-// Connects to TESTWorld182.aternos.me:53373 with username "bot".
-// Assumes Node.js and mineflayer (plus dependencies) are installed in Termux.
-
 const mineflayer = require('mineflayer');
 const Vec3 = require('vec3').Vec3;
 
-// -----------------------------------------------------------------------------
-// Patch 1: Safe Vec3.add to avoid crashing on undefined input
-// If an undefined or invalid vector is added, return the original vector.
+// Vec3 fix
 const originalVec3Add = Vec3.prototype.add;
 Vec3.prototype.add = function (v) {
-  if (!v || typeof v.x !== 'number' || typeof v.y !== 'number' || typeof v.z !== 'number') {
-    // Invalid vector: ignore addition to prevent crash
-    return this;
-  }
+  if (!v || typeof v.x !== 'number') return this;
   return originalVec3Add.call(this, v);
 };
 
-// -----------------------------------------------------------------------------
-// Patch 2: Safe enchantment reading to bypass NBT errors
-// Preload prismarine-item with version 1.21.5 and wrap its enchantment getter
+// Enchant fix
 try {
   const Item = require('prismarine-item')('1.21.5');
-  const enchantDescriptor = Object.getOwnPropertyDescriptor(Item.prototype, 'enchants');
-  if (enchantDescriptor) {
+  const desc = Object.getOwnPropertyDescriptor(Item.prototype, 'enchants');
+  if (desc) {
     Object.defineProperty(Item.prototype, 'enchants', {
-      get: function () {
-        try {
-          // Original enchantment parsing
-          return enchantDescriptor.get.call(this);
-        } catch (err) {
-          // On error (new NBT format in 1.21.5), strip enchantment tags and return empty list
-          if (this.nbt) {
-            delete this.nbt.Enchantments;
-            delete this.nbt.enchantments;
-          }
-          return [];
-        }
-      },
-      set: enchantDescriptor.set
+      get() { try { return desc.get.call(this); } catch { return []; } },
+      set: desc.set
     });
   }
-} catch (e) {
-  console.warn('Failed to patch enchantment NBT handling:', e);
-}
+} catch {}
 
-// -----------------------------------------------------------------------------
-// Function to create and start the bot (and to restart it on disconnect)
+// Start bot
 function startBot() {
   const bot = mineflayer.createBot({
     host: 'TESTWorld182.aternos.me',
     port: 53373,
     username: 'bot',
-    version: '1.21.5',   // specify Minecraft version for compatibility
+    version: '1.21.5'
   });
 
-  // Log basic events
   bot.on('spawn', () => {
-    console.log('Bot spawned in the world.');
-    // Example action on spawn: say hello (comment out if not needed)
-    // bot.chat('Hello, I am ready!');
+    console.log('Bot spawned.');
+    bot.chat('Hello world!');
+
+    // Look around slowly to avoid invalid movement kicks
+    setInterval(() => {
+      const yaw = bot.entity.yaw + 0.1;
+      bot.look(yaw, bot.entity.pitch, false);
+    }, 1000);
   });
 
-  // Disconnect/reconnect handling
-  bot.on('end', () => {
-    console.log('Bot disconnected. Attempting to reconnect in 5s...');
-    setTimeout(startBot, 5000);
-  });
-  bot.on('kicked', (reason) => {
-    console.log('Bot was kicked from the server. Reason:', reason);
-  });
-  bot.on('error', (err) => {
-    console.error('Bot encountered an error:', err);
-  });
-
-  // ---------------------------------------------------------------------------
-  // Movement safeguard: track last position each physics tick
-  let lastPos = null;
-  bot.on('physicsTick', () => {
-    const pos = bot.entity.position;
-    if (lastPos) {
-      const dx = pos.x - lastPos.x;
-      const dy = pos.y - lastPos.y;
-      const dz = pos.z - lastPos.z;
-      // If moved more than ~1 block in any direction in one tick, clear movement
-      if (Math.abs(dx) > 1 || Math.abs(dy) > 1 || Math.abs(dz) > 1) {
-        bot.clearControlStates();
+  // Follow nearest player safely
+  setInterval(() => {
+    const player = Object.values(bot.players).find(p => p.username !== bot.username && p.entity);
+    if (player) {
+      const targetPos = player.entity.position;
+      if (bot.entity.position.distanceTo(targetPos) > 2) {
+        // Move toward player in small safe steps
+        bot.setControlState('forward', true);
+        setTimeout(() => bot.clearControlStates(), 200);
       }
     }
-    lastPos = pos.clone();
-  });
+  }, 2000);
 
-  // Additional bot behavior can be added here, e.g. responding to chat, pathfinding, etc.
+  // Kick/reconnect handling
+  bot.on('end', () => setTimeout(startBot, 5000));
+  bot.on('kicked', r => console.log('Kicked:', r));
+  bot.on('error', e => console.log('Error:', e));
 }
 
-// Start the bot for the first time
 startBot();
