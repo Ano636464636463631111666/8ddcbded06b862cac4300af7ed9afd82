@@ -1,7 +1,10 @@
 const mineflayer = require('mineflayer');
 const Vec3 = require('vec3').Vec3;
+const { pathfinder, Movements, goals: { GoalFollow, GoalBlock } } = require('mineflayer-pathfinder');
+const mcData = require('minecraft-data')('1.21.5');
+const Item = require('prismarine-item')('1.21.5');
 
-// Vec3 fix
+// Vec3 fix to avoid errors
 const originalVec3Add = Vec3.prototype.add;
 Vec3.prototype.add = function (v) {
   if (!v || typeof v.x !== 'number') return this;
@@ -10,7 +13,6 @@ Vec3.prototype.add = function (v) {
 
 // Enchant fix
 try {
-  const Item = require('prismarine-item')('1.21.5');
   const desc = Object.getOwnPropertyDescriptor(Item.prototype, 'enchants');
   if (desc) {
     Object.defineProperty(Item.prototype, 'enchants', {
@@ -20,43 +22,129 @@ try {
   }
 } catch {}
 
-// Start bot
 function startBot() {
   const bot = mineflayer.createBot({
     host: 'TESTWorld182.aternos.me',
     port: 53373,
     username: 'bot',
-    version: '1.21.5'
+    version: '1.21.5',
   });
 
-  bot.on('spawn', () => {
-    console.log('Bot spawned.');
-    bot.chat('Hello world!');
+  bot.loadPlugin(pathfinder);
 
-    // Look around slowly to avoid invalid movement kicks
+  bot.once('spawn', () => {
+    bot.chat('Hello! I am ready.');
+
+    const defaultMove = new Movements(bot, mcData);
+    bot.pathfinder.setMovements(defaultMove);
+
+    // Slowly look around to avoid invalid movement kicks
     setInterval(() => {
       const yaw = bot.entity.yaw + 0.1;
       bot.look(yaw, bot.entity.pitch, false);
     }, 1000);
   });
 
-  // Follow nearest player safely
-  setInterval(() => {
-    const player = Object.values(bot.players).find(p => p.username !== bot.username && p.entity);
-    if (player) {
-      const targetPos = player.entity.position;
-      if (bot.entity.position.distanceTo(targetPos) > 2) {
-        // Move toward player in small safe steps
-        bot.setControlState('forward', true);
-        setTimeout(() => bot.clearControlStates(), 200);
-      }
-    }
-  }, 2000);
+  // Simple chat responses + commands
+  bot.on('chat', async (username, message) => {
+    if (username === bot.username) return; // Ignore own messages
 
-  // Kick/reconnect handling
-  bot.on('end', () => setTimeout(startBot, 5000));
-  bot.on('kicked', r => console.log('Kicked:', r));
-  bot.on('error', e => console.log('Error:', e));
+    message = message.toLowerCase();
+
+    // Follow me command
+    if (message === 'follow me') {
+      const player = bot.players[username];
+      if (!player || !player.entity) {
+        bot.chat(`I can't see you, ${username}. Move closer!`);
+        return;
+      }
+      bot.chat(`Okay ${username}, I'm following you!`);
+      bot.pathfinder.setGoal(new GoalFollow(player.entity, 1), true);
+      return;
+    }
+
+    // Stop command
+    if (message === 'stop') {
+      bot.pathfinder.setGoal(null);
+      bot.chat("Okay, I stopped following.");
+      return;
+    }
+
+    // Craft command e.g. "craft a crafting table"
+    if (message.startsWith('craft ')) {
+      const itemName = message.replace('craft ', '').trim();
+
+      // Find recipe for itemName
+      const recipes = bot.recipesAll(mcData.itemsByName[itemName]?.id, null, 1);
+
+      if (recipes.length === 0) {
+        bot.chat(`Sorry, I don't know how to craft ${itemName}.`);
+        return;
+      }
+
+      bot.chat(`Crafting a ${itemName} for you...`);
+      try {
+        await bot.craft(recipes[0], 1, null);
+        bot.chat(`I crafted a ${itemName}!`);
+      } catch (err) {
+        bot.chat(`I couldn't craft a ${itemName}: ${err.message}`);
+      }
+      return;
+    }
+
+    // Mine command e.g. "mine some diamond"
+    if (message.startsWith('mine ')) {
+      const blockName = message.replace('mine ', '').trim().replace(/^some /, '');
+      const blockId = mcData.blocksByName[blockName]?.id;
+      if (!blockId) {
+        bot.chat(`I don't know the block ${blockName}`);
+        return;
+      }
+
+      bot.chat(`Looking for some ${blockName} to mine!`);
+
+      // Find nearest block
+      const block = bot.findBlock({
+        matching: blockId,
+        maxDistance: 64
+      });
+
+      if (!block) {
+        bot.chat(`I can't find any ${blockName} nearby.`);
+        return;
+      }
+
+      try {
+        await bot.dig(block);
+        bot.chat(`I mined some ${blockName}!`);
+      } catch (err) {
+        bot.chat(`I failed to mine ${blockName}: ${err.message}`);
+      }
+      return;
+    }
+
+    // Some basic chat replies
+    if (message.includes('hello') || message.includes('hi')) {
+      bot.chat(`Hello ${username}!`);
+      return;
+    }
+    if (message.includes('how are you')) {
+      bot.chat("I'm just a bot, but I'm doing fine, thanks!");
+      return;
+    }
+  });
+
+  // Handle errors and reconnect
+  bot.on('kicked', reason => {
+    console.log('Kicked:', reason);
+  });
+  bot.on('error', err => {
+    console.log('Error:', err);
+  });
+  bot.on('end', () => {
+    console.log('Bot disconnected. Reconnecting in 5 seconds...');
+    setTimeout(startBot, 5000);
+  });
 }
 
 startBot();
